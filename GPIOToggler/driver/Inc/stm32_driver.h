@@ -16,8 +16,8 @@ typedef struct{
 	uint32_t GPIO_PinMode;
 	uint32_t GPIO_PinSpeed;
 	uint32_t GPIO_PinPuPdControl;
-	uint32_t GPIO_PinOPtype;
-	uint32_t GPIO_PinAltFun;
+	uint32_t GPIO_PinOPType;
+	uint32_t GPIO_PinAltFunMode;
 }GPIO_pinconfig_t;
 
 typedef struct{
@@ -26,7 +26,7 @@ typedef struct{
 }GPIO_Handle_t;
 
 void GPIO_PeriClockControl(GPIO_regdef_t *pGPIOx, uint8_t EnorDi);
-void GPIO_Inti(GPIO_Handle_t *pGPIOHandle);
+void GPIO_Init(GPIO_Handle_t *pGPIOHandle);
 void GPIO_DeInit(GPIO_regdef_t *pGPIOx);
 
 uint8_t GPIO_ReadFromInputPin(GPIO_regdef_t *pGPIOx, uint8_t PinNumber);
@@ -42,8 +42,5 @@ void GPIO_ToggleOutputPin(GPIO_regdef_t *pGPIOx, uint8_t PinNumber);
 #define GPIO_MODE_IT_FT     4
 #define GPIO_MODE_IT_RT     5
 #define GPIO_MODE_IT_RFT    6
-
-
-
 
 #endif /* INC_STM32_DRIVER_H_ */
