@@ -69,10 +69,352 @@ GPIOToggler/
 - **RAM**: 64 KB
 - **GPIO Ports**: A, B, C, D, E, H
 
-**Memory Layout:**
-- Flash Memory: 0x08000000
-- SRAM: 0x20000000
-- ROM: 0x1FFF0000
+### Memory Layout
+
+```
+┌─────────────────────────────────┐
+│   FLASH Memory                  │
+│  0x08000000 - 0x08040000       │
+│      (256 KB)                   │
+│  ┌─────────────────────────┐   │
+│  │ .text (Code)            │   │
+│  ├─────────────────────────┤   │
+│  │ .rodata (Const Data)    │   │
+│  ├─────────────────────────┤   │
+│  │ .data (Init Data)       │   │
+│  └─────────────────────────┘   │
+└─────────────────────────────────┘
+         (1)           (2)
+┌─────────────────────────────────┐
+│   SRAM                          │
+│  0x20000000 - 0x20010000       │
+│      (64 KB)                    │
+│  ┌─────────────────────────┐   │
+│  │ .data (Copied)          │   │
+│  ├─────────────────────────┤   │
+│  │ .bss (Zeroed)           │   │
+│  ├─────────────────────────┤   │
+│  │ Heap (malloc)           │   │
+│  ├─────────────────────────┤   │
+│  │ Stack (grows down)      │   │
+│  └─────────────────────────┘   │
+└─────────────────────────────────┘
+
+(1) Linker copies initialized data from flash to SRAM
+(2) Startup code zeros BSS and initializes heap/stack
+```
+
+### System Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                   STM32F401CCU6                        │
+│              (ARM Cortex-M4 @ 84MHz)                   │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  ┌──────────────┐      ┌──────────────┐               │
+│  │     Core     │      │   Memory     │               │
+│  │  (Cortex-M4) │      │   Controller │               │
+│  └──────┬───────┘      └──────┬───────┘               │
+│         │                      │                       │
+│  ┌──────────────────────────────────┐                 │
+│  │    Advanced Peripheral Bus       │                 │
+│  ├──────────────────────────────────┤                 │
+│  │  RCC │ GPIO │ UART │ SPI │ I2C  │                 │
+│  └──────────────────────────────────┘                 │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+
+Where:
+  RCC   = Reset and Clock Control
+  GPIO  = General Purpose Input/Output
+  UART  = Universal Asynchronous Receiver/Transmitter
+  SPI   = Serial Peripheral Interface
+  I2C   = Inter-Integrated Circuit
+```
+
+## Boot Sequence Diagram
+
+```
+┌─────────────────────────────────────────────────┐
+│         Power On or Reset                       │
+└────────────────┬────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────┐
+│  1. ROM Bootloader Executes                    │
+│     - Sets up stack pointer (SP)               │
+│     - Jumps to Reset Handler                   │
+└────────────────┬────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────┐
+│  2. startup_stm32f401ccux.s (Assembly)          │
+│     - Initialize stack pointer                 │
+│     - Initialize static data (.data)           │
+│     - Zero out .bss section                    │
+│     - Call system initialization               │
+└────────────────┬────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────┐
+│  3. libc Initialization                         │
+│     - Initialize heap, malloc/free             │
+│     - Setup file descriptors                   │
+└────────────────┬────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────┐
+│  4. main() - User Application Starts           │
+│     - GPIO configuration                       │
+│     - Main loop execution                      │
+└────────────────┬────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────┐
+│  5. Application Running                         │
+│     - Blink LED / GPIO operations              │
+│     - Handle peripherals                       │
+└─────────────────────────────────────────────────┘
+```
+
+## LED Blink Flow Diagram
+
+```
+┌──────────────────────┐
+│   Program Start      │
+│   (Reset Handler)    │
+└──────────┬───────────┘
+           │
+           ▼
+┌──────────────────────────────────┐
+│ Enable GPIOC Clock              │
+│ RCC_AHB1ENR |= (1 << 2)         │
+└──────────┬───────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────┐
+│ Configure PC13 as Output        │
+│ GPIOC_MODER &= ~(3 << 26)       │
+│ GPIOC_MODER |= (1 << 26)        │
+└──────────┬───────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────┐
+│      Infinite Loop               │
+│   ┌──────────────────────┐      │
+│   │ Toggle PC13          │      │
+│   │ GPIOC_ODR ^= (1<<13) │      │
+│   ├──────────────────────┤      │
+│   │ Delay (1M cycles)    │      │
+│   ├──────────────────────┤      │
+│   └──────────────────────┘      │
+│            ▲                     │
+│            │                     │
+│            └─────────────────────┘
+└──────────────────────────────────┘
+```
+
+## GPIO Driver Architecture
+
+```
+┌────────────────────────────────────────────────┐
+│         Application Layer                      │
+│      (main.c - User Code)                      │
+└────────────────┬─────────────────────────────┘
+                 │
+        ┌────────▼────────┐
+        │ API Functions   │
+        ├─────────────────┤
+        │ GPIO_Init()     │
+        │ GPIO_DeInit()   │
+        │ GPIO_PeriClock()│
+        │ GPIO_Read()     │
+        │ GPIO_Write()    │
+        │ GPIO_Toggle()   │
+        └────────┬────────┘
+                 │
+        ┌────────▼──────────────────┐
+        │  Driver Layer             │
+        │  stm32_toggler.c          │
+        │  (Implementation)         │
+        └────────┬──────────────────┘
+                 │
+        ┌────────▼──────────────────┐
+        │  Hardware Abstraction     │
+        │  Register Definitions     │
+        │  stm32f401.h              │
+        │  stm32_driver.h           │
+        └────────┬──────────────────┘
+                 │
+        ┌────────▼──────────────────┐
+        │  Microcontroller          │
+        │  STM32F401CCU6            │
+        │  - GPIO Ports (A-H)       │
+        │  - Registers (MODER, ODR)│
+        │  - RCC (Clock Control)    │
+        └───────────────────────────┘
+```
+
+## GPIO Register Bit Mapping (PC13 Example)
+
+```
+GPIO Port Register Layout (for 32-bit registers):
+
+MODER (Mode Register):
+┌─────────────────────────────────┐
+│ [27:26] PC13 Mode Selection     │
+│   00 = Input (default)          │
+│   01 = Output                   │
+│   10 = Alternate Function       │
+│   11 = Analog                   │
+└─────────────────────────────────┘
+
+ODR (Output Data Register):
+┌─────────────────────────────────┐
+│ [13] PC13 Output State          │
+│   0 = Low (LED ON)              │
+│   1 = High (LED OFF)            │
+└─────────────────────────────────┘
+
+IDR (Input Data Register - Read Only):
+┌─────────────────────────────────┐
+│ [13] PC13 Input State           │
+│   0 = Pin is Low                │
+│   1 = Pin is High               │
+└─────────────────────────────────┘
+```
+
+## Data Flow: GPIO Toggle Operation
+
+```
+User Code:
+┌─────────────────────────────────┐
+│ GPIO_ToggleOutputPin(GPIOC, 13) │
+└────────────────┬────────────────┘
+                 │
+                 ▼
+Driver Function:
+┌─────────────────────────────────┐
+│ pGPIOx->ODR ^= (1 << PinNumber) │
+└────────────────┬────────────────┘
+                 │
+                 ▼
+Hardware Register:
+┌─────────────────────────────────┐
+│ Read Current ODR Value          │
+│ XOR with (1 << 13) mask         │
+│ Write Back to ODR               │
+└────────────────┬────────────────┘
+                 │
+                 ▼
+Physical GPIO Pin:
+┌─────────────────────────────────┐
+│ PC13 Toggles State              │
+│ (High ↔ Low)                    │
+│ LED toggles (ON ↔ OFF)          │
+└─────────────────────────────────┘
+```
+
+## Compilation and Linking Process
+
+```
+┌──────────────────────────────────────┐
+│     Source Files                    │
+│  ┌──────────────────────────────┐   │
+│  │ main.c                       │   │
+│  │ stm32_toggler.c              │   │
+│  │ startup_stm32f401ccux.s      │   │
+│  │ syscalls.c, sysmem.c         │   │
+│  └──────────────────────────────┘   │
+└────────────────┬─────────────────────┘
+                 │
+    ┌────────────┴────────────┐
+    │                         │
+    ▼                         ▼
+┌──────────────┐         ┌──────────────┐
+│ Compiler     │         │ Assembler    │
+│ (arm-gcc)    │         │ (arm-as)     │
+└──────┬───────┘         └──────┬───────┘
+       │                        │
+       ▼                        ▼
+┌──────────────────────────────────────┐
+│  Object Files (.o)                   │
+│  ┌──────────────────────────────┐   │
+│  │ main.o                       │   │
+│  │ stm32_toggler.o              │   │
+│  │ startup_stm32f401ccux.o      │   │
+│  └──────────────────────────────┘   │
+└────────────────┬─────────────────────┘
+                 │
+                 ▼
+┌────────────────────────────────────┐
+│  Linker                            │
+│  (arm-ld)                          │
+│  + STM32F401CCUX_FLASH.ld          │
+└────────────────┬───────────────────┘
+                 │
+                 ▼
+┌────────────────────────────────────┐
+│  Executable ELF File               │
+│  (ledblink.elf)                    │
+│  ┌──────────────────────────────┐  │
+│  │ .text (Code)                 │  │
+│  │ .data (Initialized Data)     │  │
+│  │ .bss (Uninitialized Data)    │  │
+│  │ .symtab (Symbols)            │  │
+│  │ Debug Info                   │  │
+│  └──────────────────────────────┘  │
+└────────────────┬───────────────────┘
+                 │
+                 ▼
+┌────────────────────────────────────┐
+│  Binary Conversion                 │
+│  (objcopy)                         │
+└────────────────┬───────────────────┘
+                 │
+                 ▼
+┌────────────────────────────────────┐
+│  Flash Image                       │
+│  (ledblink.bin)                    │
+│  Ready to program onto MCU         │
+└────────────────────────────────────┘
+```
+
+## Project File Structure
+
+```
+Bare_Metal_programs/
+│
+├── README.md                          (This file)
+│
+├── ledblink/                          (Simple LED Blink Project)
+│   ├── Src/
+│   │   ├── main.c                     (Application code)
+│   │   ├── syscalls.c                 (System calls)
+│   │   └── sysmem.c                   (Memory management)
+│   ├── Startup/
+│   │   └── startup_stm32f401ccux.s    (Assembly startup)
+│   ├── Debug/                         (Build artifacts)
+│   ├── ledblink.launch                (Debug configuration)
+│   └── STM32F401CCUX_FLASH.ld         (Linker script)
+│
+└── GPIOToggler/                       (GPIO Driver Project)
+    ├── Src/
+    │   ├── main.c                     (Application code)
+    │   ├── syscalls.c                 (System calls)
+    │   └── sysmem.c                   (Memory management)
+    ├── driver/
+    │   ├── Inc/
+    │   │   ├── stm32_driver.h         (GPIO API)
+    │   │   └── stm32f401.h            (Register definitions)
+    │   └── src/
+    │       └── stm32_toggler.c        (Driver implementation)
+    ├── Startup/
+    │   └── startup_stm32f401ccux.s    (Assembly startup)
+    ├── Debug/                         (Build artifacts)
+    └── STM32F401CCUX_FLASH.ld         (Linker script)
+```
 
 ## GPIO Driver API
 
@@ -84,8 +426,8 @@ typedef struct{
     uint32_t GPIO_PinMode;
     uint32_t GPIO_PinSpeed;
     uint32_t GPIO_PinPuPdControl;
-    uint32_t GPIO_PinOPtype;
-    uint32_t GPIO_PinAltFun;
+    uint32_t GPIO_PinOPType;
+    uint32_t GPIO_PinAltFunMode;
 } GPIO_pinconfig_t;
 
 typedef struct{
@@ -97,7 +439,7 @@ typedef struct{
 ### Available Functions
 
 - `GPIO_PeriClockControl()` - Enable/Disable GPIO peripheral clock
-- `GPIO_Inti()` - Initialize GPIO pin with configuration
+- `GPIO_Init()` - Initialize GPIO pin with configuration
 - `GPIO_DeInit()` - De-initialize GPIO port
 - `GPIO_ReadFromInputPin()` - Read single pin value
 - `GPIO_ReadFromInputPort()` - Read entire port
@@ -174,10 +516,10 @@ Using STM32CubeIDE:
 ## Code Quality Notes
 
 ### Typos Found and Fixed
-- `GPIO_Inti()` → Should be `GPIO_Init()` (typo in function name)
-- `GPIO_PinOPtype` → Should be `GPIO_PinOPType` (inconsistent naming)
-- `GPIO_DeInti()` → Should be `GPIO_DeInit()` (typo in function declaration)
-- `GPIO_PinAltFun` → Should be `GPIO_PinAltFunMode` (typo in driver implementation)
+- `GPIO_Inti()` → Fixed to `GPIO_Init()` ✓
+- `GPIO_PinOPtype` → Fixed to `GPIO_PinOPType` ✓
+- `GPIO_DeInti()` → Fixed to `GPIO_DeInit()` ✓
+- `GPIO_PinAltFun` → Fixed to `GPIO_PinAltFunMode` ✓
 
 ### Improvements Recommended
 
@@ -190,7 +532,7 @@ Using STM32CubeIDE:
    - Add parameter descriptions
 
 3. **Complete API Implementation**
-   - Implement missing write and toggle functions
+   - Implement missing write and toggle functions ✓
    - Add interrupt configuration functions
 
 4. **Add Examples**
